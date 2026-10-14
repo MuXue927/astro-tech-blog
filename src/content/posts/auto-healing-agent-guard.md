@@ -1,6 +1,6 @@
 ---
 title: "Codex 彻底瘫痪后：我用 DeepSeek Harness 打造 7.4 秒无感自愈系统"
-date: "2026-10-15"
+date: 2026-10-15T00:00:00+08:00
 tags: ["AI Agent", "本地代理", "Python", "Windows", "排障", "DeepSeek Harness"]
 description: "Codex 两段本地代理同时阵亡，它卡在 Reconnecting 1/5→5/5 无限重连、连报错都报不完。我在本地读完 7 个日志、扒出 watchdog 连续 205 条假日志，并经历两轮迭代——从每分钟闪一次黑框的计划任务，到零窗口常驻守护进程，最终把自愈时间压到 7.4 秒。"
 ---
