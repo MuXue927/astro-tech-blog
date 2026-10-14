@@ -22,13 +22,14 @@ stream disconnected before completion
 
 然后它不会给你任何结论，只会在 `Reconnecting` 里无限循环。**一个 AI 编程助手最绝望的状态不是报错，而是连报错都报不完。**
 
-这里要说清楚：上面这几行是我在 Codex 客户端界面上看到的现象，它属于客户端 UI 层，不会落到本地代理的日志里。日志侧留下的证据更冷酷——**代理的请求行彻底消失了**：
+这里要说清楚：上面这几行是我在 Codex 客户端界面上看到的现象，它属于客户端 UI 层，不会落到本地代理的日志里。而日志侧能证明的，只是**那 59 分钟里一条请求都没有被记录**：
 
 ```log
 2026-10-14T22:05:39 vision bridge proxy listening on 127.0.0.1:19100 -> https://api.deepseek.com; vision key configured: True
-（此后 59 分钟，一行请求都没有）
 2026-10-14T23:04:49 vision bridge proxy listening on 127.0.0.1:19100 -> https://api.deepseek.com; vision key configured: True
 ```
+
+`proxy.log` 是访问日志，每完成一个请求写一行；上面这两行在文件里是**相邻的**（第 3491 行和第 3492 行），中间什么都没有。但这里有个坑我必须自己先踩明白：**"日志安静"并不能证明进程死了**——同一个代理进程曾经安静过 8 天半（`09-19 17:53:40 → 09-28 04:52:31`）。把这件事钉死的是另外三件独立的物理证据，我留到 2.2 节说。
 
 更折磨人的不是"崩"，而是**随机崩**。这里要说清楚一个取证上的边界：`proxy.log` 只记录"代理启动"，**不记录"代理死亡"**——所以能算出来的只是两次被拉起之间的间隔，代理真实的存活时间只会比它更短。即便如此，把 `proxy.log` 里 30 次启动横幅之间的间隔全部算一遍，也已经毫无规律：
 
@@ -38,6 +39,8 @@ stream disconnected before completion
 | 数分钟 ~ 数小时 | 9 次     | `09-18 17:34:16 → 17:45:12`       |
 | 1 ~ 3.5 天      | 8 次     | `10-03 22:02:37 → 10-05 06:21:59` |
 | 12 ~ 16.4 天    | 3 次     | `09-02 08:20:13 → 09-18 17:34:16` |
+
+（这 29 个间隔对应 30 次启动横幅，集中在 8 月 25 日到 10 月 12 日之间。）
 
 **从不到 1 分钟到 16.4 天，没有任何规律。** 你不可能靠"感觉快不行了就重启一下"来运维这种东西——你连它什么时候会死都不知道。
 
@@ -83,20 +86,30 @@ Codex ──► 127.0.0.1:15721 (CC Switch 本地代理)
 2026-10-14T23:04:04 watchdog start attempt: status=already_running pid=6772 ready=True
 ```
 
-从 `22:23:12` 到 `23:04:04`，**连续 205 条** `already_running pid=6772 ready=True`，每 12 秒一条，整整 41 分钟。
+从 `22:23:12` 到 `23:04:04`，**连续 205 条** `already_running pid=6772 ready=True`，覆盖 40.9 分钟。（插一句严谨性：`--interval` 名义上是 10 秒，但把每次检查自身耗时算进去，实测相邻两行相差 **12 秒**——写文章时我特意去对数了间隔，而不是照抄参数。）
 
-问题是：**pid 6772 早就死了。** 我用 `tasklist` 去查它的那一刻：
+问题是：**pid 6772 早就死了。** 把这件事钉死的是三条互相独立的证据，它们都不依赖那个"安静的日志"：
+
+**证据一：进程不存在。**
 
 ```powershell
 PS> tasklist /FI "PID eq 6772" /NH
-INFO: No tasks are running which match the specified criteria.
+INFO: No tasks are running which matches the specified criteria.
+```
 
+**证据二：端口主动拒绝连接。**
+
+```powershell
 PS> (New-Object System.Net.Sockets.TcpClient).Connect('127.0.0.1',19100)
 Exception calling "Connect" with "2" argument(s):
 "由于目标计算机积极拒绝，无法连接。 [::ffff:127.0.0.1]:19100"
 ```
 
-进程不存在，端口主动拒绝连接。**可 watchdog 满屏都是 `ready=True`。**
+`WSAECONNREFUSED` 是内核给出的答复：**没有任何进程在这个端口上监听**。进程活着时哪怕不处理请求，内核也会先把连接建立起来。
+
+**证据三：台账与现实矛盾，且恢复后立刻有流量。** `runtime.json` 声称 pid 6772 正在 `19100` 上监听，而前两条证据都指向相反；23:05:52 守护把代理重新拉起后，`proxy.log` 立刻恢复记录请求行——反证了此前它确实不在工作。
+
+进程不存在、端口主动拒绝、恢复即有流量——**可 watchdog 满屏都是 `ready=True`。**
 
 我去读了它的源码 `agent_vision/runtime.py`，逻辑是这样的（简化后）：
 
@@ -161,9 +174,9 @@ settings.json:
 proxy_request_logs 最后一条：2026-10-14 21:55:40
 ```
 
-**从 21:55:40 起，15721 上再没有任何一次成功转发。** 之后它退出，就是退出了——`minimizeToTrayOnClose = true` 让"关窗"只是缩到托盘，一旦真的退出，没有任何机制能把它拉回来。
+**从 21:55:40 起，15721 上就再没有成功转发过。** 它随后退出（进程表里已经找不到它）——`minimizeToTrayOnClose = true` 让"关窗"只是缩到托盘，一旦真的退出，没有任何机制能把它拉回来。当晚是我在 `23:26:07` 手动把它拉起来的，不是它自己恢复的。
 
-于是那一晚的真相是：**两段代理在半小时内先后阵亡**（CC Switch 停在 `21:55:40`，agent-vision 死在 `22:05:39` 之后），Codex 每轮对话都直接连不上 `15721`。这也解释了那个反直觉的现象——**为什么"重启电脑"总能治好**：重启后你手动打开 CC Switch、登录时 VBS 又拉起 agent-vision，两跳齐了，Codex 就"自己好了"。然后过一阵子，随机再死一次。
+于是那一晚的真相是：**两段代理在十分钟左右先后阵亡**（CC Switch 停在 `21:55:40`，agent-vision 在 `22:05:39` 启动之后再没处理过一个请求，并于 `23:02` 前死亡），Codex 每轮对话都直接连不上 `15721`。这也解释了那个反直觉的现象——**为什么"重启电脑"总能治好**：重启后你手动打开 CC Switch、登录时 VBS 又拉起 agent-vision，两跳齐了，Codex 就"自己好了"。然后过一阵子，随机再死一次。
 
 ## 三、第二步破局：从"每分钟闪黑框"到"零窗口静默守护"
 
@@ -174,7 +187,7 @@ proxy_request_logs 最后一条：2026-10-14 21:55:40
 我的第一版思路很直接：既然两个端口的存活决定了 Codex 的生死，那就每分钟体检一次，谁死拉谁。用 Windows 计划任务实现：
 
 ```powershell
-# 第一轮：每分钟拉起 powershell.exe 体检 15721 / 19100
+# 第一轮：每分钟拉起 powershell.exe 去体检 15721 / 19100（当时真正执行的命令）
 schtasks /create /tn "cc-switch-guard" `
   /tr "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$env:USERPROFILE\.cc-switch\cc-switch-guard.ps1`"" `
   /sc minute /mo 1 /f
@@ -190,9 +203,11 @@ schtasks /create /tn "cc-switch-guard" `
 
 但很快收到了反馈：**屏幕上每分钟都会闪过一次黑色命令行窗口**，而且是高频到影响工作的那种。
 
-我去翻了残留日志 `guard.log`，问题一目了然：
+我去翻了残留日志 `guard.log`，问题一目了然（下面按原文照抄）：
 
 ```log
+2026-10-14T23:10:01 ok: 19100 listening
+2026-10-14T23:10:12 ok: 19100 listening
 2026-10-14T23:11:01 ok: 19100 listening
 2026-10-14T23:11:02 ok: 19100 listening
 2026-10-14T23:12:01 ok: 19100 listening
@@ -201,7 +216,7 @@ schtasks /create /tn "cc-switch-guard" `
 2026-10-14T23:13:01 ok: 19100 listening
 ```
 
-**每分钟两条记录。** 说明当时实际有**两个**残留计划任务在跑（早期调试注册留下的名字变体），也就是**每分钟闪两次**。
+**每分钟出现两条记录**，而且从 `23:11` 起稳定成对。这说明当时实际有**两个**残留计划任务在跑——早期调试反复注册留下的名字变体（被我查询时显示成 `\+\agent-vision-guard` 这种带前缀的怪名字）。也就是说：**每分钟闪两次。**
 
 这里有个必须讲清楚的技术事实：**任何"每分钟创建一个控制台进程"的方案都会闪窗，`-WindowStyle Hidden` 救不了它。**
 
@@ -287,14 +302,16 @@ def check_once(verbose: bool, health: dict[str, bool]) -> None:
         health[name] = healthy
 ```
 
-实测稳态开销（10 秒采样）：
+实测稳态开销，值得把数字写准而不是含糊地说"零开销"：
 
 ```text
-pid 20500: +0.000 s CPU / 10s
-pid 16308: +0.000 s CPU / 10s
+30 秒采样窗口（5 秒轮询一次，两个端口）
+  守护壳进程 pid 20500 : +0.000 s
+  实际工作进程 pid 16308: +0.016 s   ← 30 秒里只消耗 16 毫秒 CPU
+进程自启动以来的累计 CPU：约 7.4 秒（覆盖约 3.4 小时运行）
 ```
 
-因为健康路径上**没有任何进程被创建**——没有 `tasklist`、没有 `netstat`、没有 `powershell`。它只是在两次 `sleep` 之间连一下 localhost。
+换算下来大约是**单核 0.05% 以下**，摊到一天约 50 秒 CPU 时间。之所以能这么低，是因为健康路径上**没有任何进程被创建**——没有 `tasklist`、没有 `netstat`、没有 `powershell`。它只是在两次 `sleep` 之间连一下 localhost。**说它"零开销"不严谨；准确的说法是"开销小到需要拉长采样窗口才能看见"。**
 
 **设计四：幂等——启动两次不会变成两个守护**
 
@@ -358,6 +375,112 @@ sh.Run """" & pythonw & """ """ & service & """", 0, False
 | 检测周期             | 最长 60 秒才发现掉线                  | 5 秒                                  |
 | 子进程存活能力       | 依赖计划任务每次新建                  | `DETACHED_PROCESS` 独立存活           |
 
+这套骨架是通用的，与我这台机器的路径和端口无关——但这话值得单独展开，因为它决定了你换了中间件之后还能不能复用。
+
+上面那些代码都绑在我这台机器上（写死的虚拟环境路径、写死的端口）。但骨架是通用的：**"一组目标 → 各自一个探活函数 → 各自一个恢复函数 → 一个只负责循环的主进程"**。下面把它抽出来，去掉所有机器相关信息，你可以照着换成自己的中间件：
+
+```python
+"""通用静默守护骨架：适用于任何"端口在、服务才算在"的本地中间件。
+
+三条设计规则：
+  1. 探活只做一次 TCP 连接（零进程创建）；
+  2. 只有探活失败才动用 tasklist / taskkill 这类重武器；
+  3. 必须用 pythonw.exe 运行，否则脚本进程自己就是那个"黑框"。
+"""
+
+import socket
+import subprocess
+import time
+from pathlib import Path
+
+# ---- 只需要改这一段：把每个中间件描述成 (名字, 端口, 恢复动作) ----
+PYTHON = Path.home() / ".venv/Scripts/pythonw.exe"          # 换成你的解释器
+
+TARGETS = [
+    # 名字          探活地址                探活失败时怎么把它拉起来
+    ("proxy-a",   ("127.0.0.1", 15721), lambda: launch(APP_A, [])),
+    ("proxy-b",   ("127.0.0.1", 19100), lambda: launch(PYTHON, ["-m", "some_module", "serve"])),
+]
+# -------------------------------------------------------------------
+
+INTERVAL = 5.0          # 轮询间隔：越短恢复越快，越长越省电
+READY_TIMEOUT = 20.0    # 拉起后最多等多久算"就绪"
+
+# Windows：不分配控制台 + 脱离父进程控制台；其余平台置 0
+WINDOWLESS = 0x08000000 | 0x00000008
+
+
+def port_open(addr, timeout=1.5):
+    """唯一的探活手段：能建立 TCP 连接就算活着，不查台账、不看 pid 文件。"""
+    try:
+        with socket.create_connection(addr, timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def launch(exe, args):
+    """拉起一个中间件：无窗口、与守护进程解绑。"""
+    subprocess.Popen(
+        [str(exe), *args],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=WINDOWLESS,   # 非 Windows 平台删掉这个参数
+        close_fds=True,
+    )
+    return True
+
+
+def wait_ready(addr, timeout=READY_TIMEOUT):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if port_open(addr):
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def check_once(health):
+    """一轮检查：先探活，死了才恢复，只在状态翻转时写日志。"""
+    for name, addr, recover in TARGETS:
+        try:
+            healthy = port_open(addr)
+            if not healthy:
+                log(f"{name} down, recovering...")
+                recover()
+                healthy = wait_ready(addr)
+        except Exception as error:            # 单个目标出错不能拖垮守护进程
+            log(f"{name} check error: {error!r}")
+            healthy = False
+
+        if health.get(name) is not None and health[name] != healthy:
+            log(f"{name} health changed: {health[name]} -> {healthy}")
+        health[name] = healthy
+
+
+def log(message):
+    line = f"{time.strftime('%Y-%m-%dT%H:%M:%S')} {message}\n"
+    with open("guard-service.log", "a", encoding="utf-8") as fh:
+        fh.write(line)
+
+
+if __name__ == "__main__":
+    health = {}
+    while True:
+        check_once(health)
+        time.sleep(max(2.0, INTERVAL))
+```
+
+把它落到自己机器上，按这四步做，每一步都对应上面踩过的坑：
+
+1. **换 `TARGETS`**：填你自己的端口和启动命令。注意恢复动作要写成"独立进程"，别写成一个需要保持前台的东西。
+2. **用 `pythonw.exe` 启动它**（Windows）。这一点没有替代方案——用 `python.exe` 就等于自己给自己造了个黑框。
+3. **开机自启选一条**：启动文件夹放一个 `WScript.Shell.Run "...", 0, False` 的 VBS（本文用的就是这条，不需要管理员权限）；或者用计划任务，但触发器必须是"登录时/开机时"这类**一次性事件**，绝不能是 `/sc minute`。
+4. **给自己留一个手动开关**：加一个 `--once` 参数跑单次检查，出事时能立刻诊断，不必等下一个轮询周期。
+
+这套骨架换来的是什么，一句话：**把"用户需要知道中间件挂了"变成"用户不需要知道它挂过"。** 它不解决上游问题，也不解决服务"活着但不可用"的问题——那部分见下一节。
+
 ## 四、第三步验证：7.4 秒真机实验
 
 设计讲完，必须用真实故障验证。我做了破坏性实验：**在用户正在使用 Codex 的情况下**，直接把两段代理一起杀掉——`19100` 的 agent-vision 进程、`15721` 的 CC Switch 主进程，全部 `taskkill`。
@@ -395,17 +518,125 @@ elif verbose and healthy:
 
 所以 `guard-service.log` 长期只有十几行——**一个健康的系统，日志应该是安静的**。反过来再看 `watchdog.log` 那 471 条 `already_running`，你会明白"日志里全是 OK"有时候比"日志里全是 ERROR"更可怕。
 
-## 五、边界：守护看不见什么——端口活着 ≠ 服务可用
+## 五、通用骨架：这套东西怎么搬到你的机器上
+
+7.4 秒是这台机器的结果，但**结构本身与机器无关**。"一组中间件 → 各自一个探活函数 → 各自一个恢复函数 → 一个只负责循环的主进程"——这个形状可以套到任何"端口在、服务才算在"的本地依赖上：本机模型代理、向量库、本地推理服务、开发用的网关，全都适用。
+
+上面那些代码都绑在我这台机器上（写死的虚拟环境路径、写死的端口）。下面把它抽出来，去掉所有机器相关信息，你照着换成自己的中间件即可：
+
+```python
+"""通用静默守护骨架：适用于任何"端口在、服务才算在"的本地中间件。
+
+三条设计规则：
+  1. 探活只做一次 TCP 连接（零进程创建）；
+  2. 只有探活失败才动用 tasklist / taskkill 这类重武器；
+  3. 必须用 pythonw.exe 运行，否则脚本进程自己就是那个"黑框"。
+"""
+
+import socket
+import subprocess
+import time
+from pathlib import Path
+
+# ---- 只需要改这一段：把每个中间件描述成 (名字, 端口, 恢复动作) ----
+PYTHON = Path.home() / ".venv/Scripts/pythonw.exe"          # 换成你的解释器
+
+TARGETS = [
+    # 名字        探活地址                探活失败时怎么把它拉起来
+    ("proxy-a", ("127.0.0.1", 15721), lambda: launch(APP_A, [])),
+    ("proxy-b", ("127.0.0.1", 19100), lambda: launch(PYTHON, ["-m", "some_module", "serve"])),
+]
+# -------------------------------------------------------------------
+
+INTERVAL = 5.0          # 轮询间隔：越短恢复越快，越长越省电
+READY_TIMEOUT = 20.0    # 拉起后最多等多久算"就绪"
+
+# Windows：不分配控制台 + 脱离父进程控制台；其余平台置 0
+WINDOWLESS = 0x08000000 | 0x00000008
+
+
+def port_open(addr, timeout=1.5):
+    """唯一的探活手段：能建立 TCP 连接就算活着，不查台账、不看 pid 文件。"""
+    try:
+        with socket.create_connection(addr, timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def launch(exe, args):
+    """拉起一个中间件：无窗口、与守护进程解绑。"""
+    subprocess.Popen(
+        [str(exe), *args],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=WINDOWLESS,   # 非 Windows 平台删掉这个参数
+        close_fds=True,
+    )
+    return True
+
+
+def wait_ready(addr, timeout=READY_TIMEOUT):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if port_open(addr):
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def check_once(health):
+    """一轮检查：先探活，死了才恢复，只在状态翻转时写日志。"""
+    for name, addr, recover in TARGETS:
+        try:
+            healthy = port_open(addr)
+            if not healthy:
+                log(f"{name} down, recovering...")
+                recover()
+                healthy = wait_ready(addr)
+        except Exception as error:            # 单个目标出错不能拖垮守护进程
+            log(f"{name} check error: {error!r}")
+            healthy = False
+
+        if health.get(name) is not None and health[name] != healthy:
+            log(f"{name} health changed: {health[name]} -> {healthy}")
+        health[name] = healthy
+
+
+def log(message):
+    line = f"{time.strftime('%Y-%m-%dT%H:%M:%S')} {message}\n"
+    with open("guard-service.log", "a", encoding="utf-8") as fh:
+        fh.write(line)
+
+
+if __name__ == "__main__":
+    health = {}
+    while True:
+        check_once(health)
+        time.sleep(max(2.0, INTERVAL))
+```
+
+把它落到自己机器上，按这四步做，每一步都对应上面踩过的坑：
+
+1. **换 `TARGETS`**：填你自己的端口和启动命令。恢复动作要写成"独立进程"，别写成一个需要保持前台的东西。
+2. **用 `pythonw.exe` 启动它**（Windows）。这一点没有替代方案——用 `python.exe` 就等于自己给自己造了个黑框。
+3. **开机自启选一条**：启动文件夹放一个 `WScript.Shell.Run "...", 0, False` 的 VBS（本文用的就是这条，不需要管理员权限）；或者用计划任务，但触发器必须是"登录时/开机时"这类**一次性事件**，绝不能是 `/sc minute`。
+4. **给自己留一个手动开关**：加一个 `--once` 参数跑单次检查，出事时能立刻诊断，不必等下一个轮询周期。
+
+最后交代这个骨架**做不到**什么，免得你把它当成万能药：它只保证"端口有人听"，不保证"服务能干活"。上游连不上、鉴权过期、响应异常这一类故障，它的探活会一路返回"健康"。这正是下一节要讲的边界。
+
+## 六、边界：守护看不见什么——端口活着 ≠ 服务可用
 
 必须把职责边界说清楚，否则上面那 7.4 秒会给人一个错觉，以为装上它就万事大吉。就隔了几个小时，Codex 又断了一次，而这次守护进程**一行日志都没写**：
 
 ```log
 2026-10-15T01:46:17 [WARN][...::proxy::forwarder] Provider DeepSeek 请求失败: 上游连接失败: error sending request
-（此后连续约 100 秒，每次请求都同样失败，数据库里留下 41 条 status=502）
+（从 01:45 到 01:48 这三分钟里，数据库累计 40 条 status=502；历史全部 41 条 502 记录中有 40 条集中在这一窗口）
 2026-10-15T01:48:11 请求恢复正常，status=200
 ```
 
-但这次报错和上一节完全不同——Codex 收到的是 **502 Bad Gateway**，而不是"连不上"。关键推论只有一个：**这个 502 是 CC Switch 亲手返回的；一个已经死掉的进程不可能返回 HTTP 状态码。** 而 `guard-service.log` 在那 100 秒里一片空白，因为 `15721` 和 `19100` **全程都在 LISTENING**——守护进程监控 TCP 端口，它看到的是"两个端口都好得很"。
+但这次报错和上一节完全不同——Codex 收到的是 **502 Bad Gateway**，而不是"连不上"。关键推论只有一个：**这个 502 是 CC Switch 亲手返回的；一个已经死掉的进程不可能返回 HTTP 状态码。** 而 `guard-service.log` 在那三分钟里一片空白，因为 `15721` 和 `19100` **全程都在 LISTENING**——守护进程监控 TCP 端口，它看到的是"两个端口都好得很"。
 
 真相写在 CC Switch 自己的日志里：
 
@@ -420,7 +651,7 @@ CC Switch 自己触发了应用自动更新：detach Codex 路由、停掉 `1572
 
 这给守护划出清晰的边界：**它探测的是"端口是否可连通"，因此对"服务活着但不可用"完全无能为力。** 上游连接失败、鉴权过期、返回体异常、响应变慢——这些故障里端口都是通的，守护一个都看不见。这不是缺陷，而是**监控必须分层**：TCP 存活是一层，HTTP 健康是一层，上游可达性是第三层。这次我只做了最底下那一层，并且明确知道它管不到什么。
 
-## 六、总结与思考
+## 七、总结与思考
 
 ### 当主力 AI 瘫痪时，"能动手的本地 Agent"是不可替代的
 
@@ -434,7 +665,7 @@ CC Switch 自己触发了应用自动更新：detach Codex 路由、停掉 `1572
 
 第一版计划任务方案完全能实现自愈——端口死了就拉起来，功能上 100% 达标。如果我只用"Codex 能不能用"当验收标准，事情到那里就该结束了。但**一分钟闪一次黑框**这个副作用，把"能用"变成了"每天被干扰一千次的能用"。一个修复方案如果让用户的日常工作被持续打断，那它在工程意义上还没有完成。
 
-第二轮我换掉了整个思路：从"定时创建进程"改成"常驻单进程"，从"隐藏窗口"改成"没有窗口"，从"每次启动一整套"改成"健康路径什么都不做"。这些改动的收益可以量化（CPU `0.000s/10s`、零窗口、5 秒检测、7.4 秒恢复），但它们的出发点其实是一句很朴素的话：**好的运维应该是不被感知的。**
+第二轮我换掉了整个思路：从"定时创建进程"改成"常驻单进程"，从"隐藏窗口"改成"没有窗口"，从"每次启动一整套"改成"健康路径什么都不做"。这些改动的收益可以量化（单核开销约 0.05%、零窗口、5 秒检测、7.4 秒恢复），但它们的出发点其实是一句很朴素的话：**好的运维应该是不被感知的。**
 
 所以这篇文章想留下的不是那几十行 Python，而是这样一个判断标准：
 
