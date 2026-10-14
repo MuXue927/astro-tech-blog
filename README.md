@@ -17,6 +17,8 @@ https://github.com/MuXue927/supply-chain-optimization-portfolio
 
 ## 本地运行
 
+需要 Node.js `22.13.0` 或更高版本。
+
 ```powershell
 pnpm install
 pnpm dev
