@@ -1,7 +1,9 @@
 {
-  "name": "tech-notes",
+  "name": "astro-tech-blog",
   "type": "module",
   "version": "0.1.0",
+  "private": true,
+  "description": "MuXue's personal technical blog built with AstroPaper.",
   "packageManager": "pnpm@11.25.0",
   "engines": {
     "node": ">=20.18.0"
