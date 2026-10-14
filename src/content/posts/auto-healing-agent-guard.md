@@ -1,7 +1,7 @@
 ---
 title: "Codex 彻底瘫痪后：我用 DeepSeek Harness 打造 7.4 秒无感自愈系统"
 date: 2026-10-15T00:00:00+08:00
-tags: ["AI Agent", "本地代理", "Python", "Windows", "排障", "DeepSeek Harness"]
+tags: ["AI Agent", "Python", "Windows", "排障"]
 description: "Codex 两段本地代理同时阵亡，它卡在 Reconnecting 1/5→5/5 无限重连、连报错都报不完。我在本地读完 7 个日志、扒出 watchdog 连续 205 条假日志，并经历两轮迭代——从每分钟闪一次黑框的计划任务，到零窗口常驻守护进程，最终把自愈时间压到 7.4 秒。"
 ---
 
@@ -370,116 +370,10 @@ sh.Run """" & pythonw & """ """ & service & """", 0, False
 | 解释器               | `powershell.exe`（控制台子系统）      | `pythonw.exe`（GUI 子系统，无控制台） |
 | 健康路径是否创建进程 | **是**，每次至少 1 个                 | **否**，一次 TCP 连接，零进程         |
 | 是否闪窗             | **每分钟闪，日志显示当时每分钟两次**  | **零窗口**                            |
-| 稳态 CPU             | 每次进程启动 + 脚本解释开销           | `0.000 s / 10s`                       |
+| 稳态 CPU             | 每次进程启动 + 脚本解释开销           | 实测 30 秒采样仅 0.016 s              |
 | 幂等性               | 残留任务会重复注册（当时就有两个）    | pid 文件判定，重复启动直接退出        |
 | 检测周期             | 最长 60 秒才发现掉线                  | 5 秒                                  |
 | 子进程存活能力       | 依赖计划任务每次新建                  | `DETACHED_PROCESS` 独立存活           |
-
-这套骨架是通用的，与我这台机器的路径和端口无关——但这话值得单独展开，因为它决定了你换了中间件之后还能不能复用。
-
-上面那些代码都绑在我这台机器上（写死的虚拟环境路径、写死的端口）。但骨架是通用的：**"一组目标 → 各自一个探活函数 → 各自一个恢复函数 → 一个只负责循环的主进程"**。下面把它抽出来，去掉所有机器相关信息，你可以照着换成自己的中间件：
-
-```python
-"""通用静默守护骨架：适用于任何"端口在、服务才算在"的本地中间件。
-
-三条设计规则：
-  1. 探活只做一次 TCP 连接（零进程创建）；
-  2. 只有探活失败才动用 tasklist / taskkill 这类重武器；
-  3. 必须用 pythonw.exe 运行，否则脚本进程自己就是那个"黑框"。
-"""
-
-import socket
-import subprocess
-import time
-from pathlib import Path
-
-# ---- 只需要改这一段：把每个中间件描述成 (名字, 端口, 恢复动作) ----
-PYTHON = Path.home() / ".venv/Scripts/pythonw.exe"          # 换成你的解释器
-
-TARGETS = [
-    # 名字          探活地址                探活失败时怎么把它拉起来
-    ("proxy-a",   ("127.0.0.1", 15721), lambda: launch(APP_A, [])),
-    ("proxy-b",   ("127.0.0.1", 19100), lambda: launch(PYTHON, ["-m", "some_module", "serve"])),
-]
-# -------------------------------------------------------------------
-
-INTERVAL = 5.0          # 轮询间隔：越短恢复越快，越长越省电
-READY_TIMEOUT = 20.0    # 拉起后最多等多久算"就绪"
-
-# Windows：不分配控制台 + 脱离父进程控制台；其余平台置 0
-WINDOWLESS = 0x08000000 | 0x00000008
-
-
-def port_open(addr, timeout=1.5):
-    """唯一的探活手段：能建立 TCP 连接就算活着，不查台账、不看 pid 文件。"""
-    try:
-        with socket.create_connection(addr, timeout=timeout):
-            return True
-    except OSError:
-        return False
-
-
-def launch(exe, args):
-    """拉起一个中间件：无窗口、与守护进程解绑。"""
-    subprocess.Popen(
-        [str(exe), *args],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        creationflags=WINDOWLESS,   # 非 Windows 平台删掉这个参数
-        close_fds=True,
-    )
-    return True
-
-
-def wait_ready(addr, timeout=READY_TIMEOUT):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if port_open(addr):
-            return True
-        time.sleep(0.5)
-    return False
-
-
-def check_once(health):
-    """一轮检查：先探活，死了才恢复，只在状态翻转时写日志。"""
-    for name, addr, recover in TARGETS:
-        try:
-            healthy = port_open(addr)
-            if not healthy:
-                log(f"{name} down, recovering...")
-                recover()
-                healthy = wait_ready(addr)
-        except Exception as error:            # 单个目标出错不能拖垮守护进程
-            log(f"{name} check error: {error!r}")
-            healthy = False
-
-        if health.get(name) is not None and health[name] != healthy:
-            log(f"{name} health changed: {health[name]} -> {healthy}")
-        health[name] = healthy
-
-
-def log(message):
-    line = f"{time.strftime('%Y-%m-%dT%H:%M:%S')} {message}\n"
-    with open("guard-service.log", "a", encoding="utf-8") as fh:
-        fh.write(line)
-
-
-if __name__ == "__main__":
-    health = {}
-    while True:
-        check_once(health)
-        time.sleep(max(2.0, INTERVAL))
-```
-
-把它落到自己机器上，按这四步做，每一步都对应上面踩过的坑：
-
-1. **换 `TARGETS`**：填你自己的端口和启动命令。注意恢复动作要写成"独立进程"，别写成一个需要保持前台的东西。
-2. **用 `pythonw.exe` 启动它**（Windows）。这一点没有替代方案——用 `python.exe` 就等于自己给自己造了个黑框。
-3. **开机自启选一条**：启动文件夹放一个 `WScript.Shell.Run "...", 0, False` 的 VBS（本文用的就是这条，不需要管理员权限）；或者用计划任务，但触发器必须是"登录时/开机时"这类**一次性事件**，绝不能是 `/sc minute`。
-4. **给自己留一个手动开关**：加一个 `--once` 参数跑单次检查，出事时能立刻诊断，不必等下一个轮询周期。
-
-这套骨架换来的是什么，一句话：**把"用户需要知道中间件挂了"变成"用户不需要知道它挂过"。** 它不解决上游问题，也不解决服务"活着但不可用"的问题——那部分见下一节。
 
 ## 四、第三步验证：7.4 秒真机实验
 
