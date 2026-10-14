@@ -1,5 +1,5 @@
 export const SITE = {
-  website: "https://astro-tech-blog.vercel.app/",
+  website: "https://astro-tech-blog-seven.vercel.app/",
   author: "MuXue927",
   profile: "https://github.com/MuXue927",
   desc: "个人技术笔记、工具经验和学习记录。",
