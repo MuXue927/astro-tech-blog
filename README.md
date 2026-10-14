@@ -6,6 +6,10 @@
 
 https://github.com/MuXue927/supply-chain-optimization-portfolio
 
+线上站点：
+
+https://astro-tech-blog.vercel.app
+
 ## 技术栈
 
 - Astro
