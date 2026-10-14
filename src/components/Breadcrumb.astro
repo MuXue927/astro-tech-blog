@@ -9,7 +9,7 @@ const breadcrumbList = currentUrlPath.split("/").slice(1);
 // if breadcrumb is Home > Posts > 1 <etc>
 // replace Posts with Posts (page number)
 if (breadcrumbList[0] === "posts") {
-  breadcrumbList.splice(0, 2, `Posts (page ${breadcrumbList[1] || 1})`);
+  breadcrumbList.splice(0, 2, `文章（第 ${breadcrumbList[1] || 1} 页）`);
 }
 
 // if breadcrumb is Home > Tags > [tag] > [page] <etc>
@@ -18,9 +18,19 @@ if (breadcrumbList[0] === "tags" && !isNaN(Number(breadcrumbList[2]))) {
   breadcrumbList.splice(
     1,
     3,
-    `${breadcrumbList[1]} ${Number(breadcrumbList[2]) === 1 ? "" : "(page " + breadcrumbList[2] + ")"}`
+    `${breadcrumbList[1]} ${Number(breadcrumbList[2]) === 1 ? "" : "（第 " + breadcrumbList[2] + " 页）"}`
   );
 }
+
+const breadcrumbLabels: Record<string, string> = {
+  posts: "文章",
+  tags: "标签",
+  about: "关于",
+  archives: "归档",
+  search: "搜索",
+};
+
+const getBreadcrumbLabel = (value: string) => breadcrumbLabels[value] ?? value;
 ---
 
 <nav class="app-layout mt-8 mb-1" aria-label="breadcrumb">
@@ -28,7 +38,7 @@ if (breadcrumbList[0] === "tags" && !isNaN(Number(breadcrumbList[2]))) {
     class="font-light [&>li]:inline [&>li:not(:last-child)>a]:hover:opacity-100"
   >
     <li>
-      <a href="/" class="opacity-80">Home</a>
+      <a href="/" class="opacity-80">首页</a>
       <span aria-hidden="true" class="opacity-80">&raquo;</span>
     </li>
     {
@@ -40,13 +50,13 @@ if (breadcrumbList[0] === "tags" && !isNaN(Number(breadcrumbList[2]))) {
               aria-current="page"
             >
               {/* make the last part lowercase in Home > Tags > some-tag */}
-              {decodeURIComponent(breadcrumb)}
+              {getBreadcrumbLabel(decodeURIComponent(breadcrumb))}
             </span>
           </li>
         ) : (
           <li>
             <a href={`/${breadcrumb}/`} class="capitalize opacity-70">
-              {breadcrumb}
+              {getBreadcrumbLabel(decodeURIComponent(breadcrumb))}
             </a>
             <span aria-hidden="true">&raquo;</span>
           </li>

@@ -3,12 +3,10 @@ title: "用 AI 搭建一套可长期维护的技术博客：AstroPaper + GitHub 
 date: 2026-10-15T03:30:00+08:00
 description: "记录一次从环境冲突、内容集合、代码高亮、Git 规范化到 GitHub Actions 和 Vercel 部署的完整实践。"
 tags:
-  - AI协作
+  - AI 协作
   - Astro
   - GitHub
   - Vercel
-  - 静态博客
-  - DevOps
 ---
 
 这篇文章记录的是我如何借助 AI，从零搭建一套可以长期维护的个人技术博客。

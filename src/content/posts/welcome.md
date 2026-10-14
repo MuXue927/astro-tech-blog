@@ -5,7 +5,7 @@ description: "运筹优化方向的硕士毕业生，记录 OR / 算法、Python
 tags:
   - 随笔
   - 运筹优化
-  - AI
+  - AI Agent
 ---
 
 你好，欢迎来到我的技术笔记。
