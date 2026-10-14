@@ -40,6 +40,76 @@ GitHub Actions 执行 lint、格式检查和构建
 Vercel 自动部署生产环境
 ```
 
+## 阅读前：先替换占位符
+
+本文的命令示例使用通用占位符，不能直接原样执行。阅读时先把它们替换成你自己的值：
+
+| 占位符                 | 需要替换成                 |
+| ---------------------- | -------------------------- |
+| `YOUR_GITHUB_USERNAME` | 你的 GitHub 用户名         |
+| `YOUR_REPO_NAME`       | 你的博客仓库名             |
+| `YOUR_PROJECT_NAME`    | Vercel 项目名              |
+| `YOUR_DOMAIN`          | 博客最终域名               |
+| `YOUR_PROXY_PORT`      | 本机代理软件实际监听的端口 |
+| `D:/path/to/your-repo` | 你的本地仓库路径           |
+
+例如，下面这条命令中的用户名和仓库名必须换成你自己的：
+
+```powershell
+gh repo create YOUR_GITHUB_USERNAME/YOUR_REPO_NAME `
+  --public `
+  --source=. `
+  --remote=origin `
+  --push
+```
+
+本文中的个人域名和仓库名只用于说明场景，不应作为你的项目配置直接复制。
+
+## 通用框架：一套博客系统分成九层
+
+如果把具体工具名称暂时去掉，这类项目可以抽象成下面这套流程。换用 Hugo、Jekyll 或其他静态站点生成器时，框架仍然成立：
+
+| 阶段        | 目标                              | 需要确认的产物                        |
+| ----------- | --------------------------------- | ------------------------------------- |
+| 1. 环境     | 保证 Node、包管理器、Git 版本一致 | `.nvmrc`、`engines`、`packageManager` |
+| 2. 技术栈   | 选择静态生成器和主题              | 构建命令、输出目录、主题许可证        |
+| 3. 内容模型 | 规定文章目录和 Frontmatter        | `content.config.ts`、文章模板         |
+| 4. Markdown | 处理 GFM、代码块和图片            | Shiki/插件配置、资源目录              |
+| 5. 构建     | 生成可部署的静态文件              | `pnpm build`、`dist/`                 |
+| 6. Git      | 规范换行符、忽略文件和提交        | `.gitattributes`、`.gitignore`        |
+| 7. 远程仓库 | 创建仓库并绑定 `origin`           | GitHub 仓库、默认分支                 |
+| 8. CI/CD    | 自动执行检查和部署                | GitHub Actions、Vercel                |
+| 9. 写作循环 | 写文章、验证、提交、发布          | Markdown → commit → push → deploy     |
+
+读完之后，你应该能做到：
+
+- 检查并解释自己的 Node、pnpm、Git 版本；
+- 知道文章、图片和配置文件分别放在哪里；
+- 能写出一条不会被忽略的 Frontmatter；
+- 能在本地执行格式检查、Lint 和构建；
+- 能把仓库推送到 GitHub，并在 Vercel 上完成部署；
+- 出问题时知道先检查版本、日志、代理、路径和 Git 状态。
+
+## 文章中需要给出多少代码
+
+技术文章不应该把整个第三方主题源码复制一遍，但关键配置必须是完整、可执行的。本文采用下面的边界：
+
+文章提供的完整内容：
+
+- 可以直接执行的命令；
+- 单个文件的完整核心配置，例如 `content.config.ts`；
+- 完整的跨平台复制脚本和 GitHub Actions 关键步骤；
+- 需要由读者替换的占位符和检查清单。
+
+文章不重复提供的内容：
+
+- AstroPaper 的全部组件和样式源码；
+- 第三方依赖的完整实现；
+- `pnpm-lock.yaml` 的全部内容，锁文件应由包管理器生成；
+- 与具体机器绑定的路径、端口和账号信息。
+
+完整项目应链接到公开仓库。文章负责解释最小可复现配置、设计取舍和验证方法；仓库负责提供可长期维护的完整实现。只给半截代码，却不说明文件位置、运行命令和预期结果，不算合格的实战文章。
+
 ## 一、先明确目标，再交给 AI 执行
 
 我一开始的目标不是“做一个页面”，而是：
@@ -395,7 +465,7 @@ gh auth login --web --git-protocol https
 然后用一条命令创建远程仓库、设置描述并推送当前目录：
 
 ```powershell
-gh repo create MuXue927/astro-tech-blog `
+gh repo create YOUR_GITHUB_USERNAME/YOUR_REPO_NAME `
   --public `
   --source=. `
   --remote=origin `
@@ -406,7 +476,7 @@ gh repo create MuXue927/astro-tech-blog `
 这不是把现有仓库覆盖，而是从当前目录创建一个新的远程仓库。为了让仓库更容易被发现，还可以添加 Topics：
 
 ```powershell
-gh repo edit MuXue927/astro-tech-blog `
+gh repo edit YOUR_GITHUB_USERNAME/YOUR_REPO_NAME `
   --add-topic astro `
   --add-topic astro-paper `
   --add-topic blog `
@@ -464,23 +534,23 @@ Build Command: pnpm build
 Output Directory: dist
 ```
 
-Vercel 项目名会决定默认的 `vercel.app` 域名，而 `vercel.app` 域名是全局唯一的。如果 `astro-tech-blog.vercel.app` 已被占用，不要删除 GitHub 仓库，只需要给 Vercel 项目换一个名称，例如：
+Vercel 项目名会决定默认的 `vercel.app` 域名，而 `vercel.app` 域名是全局唯一的。如果 `YOUR_PROJECT_NAME.vercel.app` 已被占用，不要删除 GitHub 仓库，只需要给 Vercel 项目换一个名称，例如：
 
 ```text
-muxue927-astro-blog
+YOUR_PROJECT_NAME
 ```
 
 最终的默认域名可能是：
 
 ```text
-https://astro-tech-blog-seven.vercel.app
+https://YOUR_PROJECT_NAME.vercel.app
 ```
 
 更关键的是：部署完成后必须把 `src/config.ts` 中的站点地址改成真实域名：
 
 ```ts
 export const SITE = {
-  website: "https://astro-tech-blog-seven.vercel.app/",
+  website: "https://YOUR_DOMAIN/",
 };
 ```
 
